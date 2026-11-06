@@ -1,0 +1,1 @@
+This is a handcrafted, AI-assisted kernel. For now, it's just a free-time project, but who knows? It might eventually become the foundation of a larger kernel for future OS projects.

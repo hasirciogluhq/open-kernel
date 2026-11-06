@@ -1,0 +1,108 @@
+// Physical page allocator (xlang): one bit per 4 KiB frame, 1 = used.
+// The bitmap storage is provided by the caller (carved out of RAM at boot).
+// Not thread-safe: callers disable interrupts (single CPU for now).
+
+global bitmap: *ui64 = nil
+global totalPages: usize = 0
+global freeCount: usize = 0
+global hint: usize = 0
+
+fn testBit(pfn: usize) -> bool {
+    local w: ui64 = bitmap[pfn / 64]
+    return ((w >> ((pfn % 64) as ui64)) & 1) != 0
+}
+
+fn setBit(pfn: usize) {
+    bitmap[pfn / 64] = bitmap[pfn / 64] | ((1 as ui64) << ((pfn % 64) as ui64))
+}
+
+fn clearBit(pfn: usize) {
+    bitmap[pfn / 64] = bitmap[pfn / 64] & ~((1 as ui64) << ((pfn % 64) as ui64))
+}
+
+// All frames start as used; the caller then frees usable ranges.
+export(c) fn pmm_init(storage: usize, pages: usize) {
+    bitmap = storage as *ui64
+    totalPages = pages
+    freeCount = 0
+    hint = 0
+    local words: usize = (pages + 63) / 64
+    local i: usize = 0
+    while i < words {
+        bitmap[i] = ~(0 as ui64)
+        i++
+    }
+}
+
+// free != 0 -> release the range, else mark it used (reserve).
+export(c) fn pmm_mark(startPfn: usize, count: usize, free: ui32) {
+    local p: usize = startPfn
+    local end: usize = startPfn + count
+    if end > totalPages { end = totalPages }
+    while p < end {
+        local isUsed: bool = testBit(p)
+        if free != 0 {
+            if isUsed {
+                clearBit(p)
+                freeCount++
+            }
+        } else {
+            if !isUsed {
+                setBit(p)
+                freeCount--
+            }
+        }
+        p++
+    }
+}
+
+// First-fit run of n contiguous frames. Returns the physical address or 0.
+export(c) fn pmm_alloc_pages(n: usize) -> usize {
+    if n == 0 || n > freeCount { return 0 }
+    local run: usize = 0
+    local start: usize = 0
+    local p: usize = hint
+    local scanned: usize = 0
+    while scanned < totalPages {
+        if p >= totalPages {
+            p = 0
+            run = 0
+        }
+        if testBit(p) {
+            run = 0
+        } else {
+            if run == 0 { start = p }
+            run++
+            if run == n {
+                local q: usize = start
+                while q < start + n {
+                    setBit(q)
+                    q++
+                }
+                freeCount -= n
+                hint = start + n
+                return start * 4096
+            }
+        }
+        p++
+        scanned++
+    }
+    return 0
+}
+
+export(c) fn pmm_alloc() -> usize {
+    return pmm_alloc_pages(1)
+}
+
+export(c) fn pmm_free_pages(phys: usize, n: usize) {
+    pmm_mark(phys / 4096, n, 1)
+    if phys / 4096 < hint { hint = phys / 4096 }
+}
+
+export(c) fn pmm_free_count() -> usize {
+    return freeCount
+}
+
+export(c) fn pmm_total() -> usize {
+    return totalPages
+}

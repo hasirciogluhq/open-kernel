@@ -1,0 +1,87 @@
+// Kernel heap (xlang). First-fit free list over one contiguous arena,
+// address-ordered so neighbours coalesce on free. C ABI: see heap.h.
+// Not thread-safe yet: callers serialize (single CPU until M4).
+
+@repr(c)
+struct Block {
+    size: usize,   // payload bytes
+    next: *Block,  // next block in address order
+    used: usize,   // 1 = allocated
+    pad: usize,    // keeps the header 32 bytes -> payload 32-byte aligned
+}
+
+const HDR: usize = 32
+const MIN_SPLIT: usize = 64
+
+global head: *Block = nil
+global usedBytes: usize = 0
+
+fn alignUp(v: usize, a: usize) -> usize {
+    return (v + a - 1) & ~(a - 1)
+}
+
+export(c) fn heap_init(base: usize, size: usize) {
+    local start: usize = alignUp(base, 32)
+    local end: usize = (base + size) & ~(31 as usize)
+    if end <= start + HDR + MIN_SPLIT {
+        head = nil
+        return
+    }
+    head = start as *Block
+    head.size = end - start - HDR
+    head.next = nil
+    head.used = 0
+    head.pad = 0
+    usedBytes = 0
+}
+
+export(c) fn kmalloc(n: usize) -> *void {
+    if n == 0 { return nil }
+    local want: usize = alignUp(n, 32)
+    local b: *Block = head
+    while b != nil {
+        if b.used == 0 && b.size >= want {
+            // split when the remainder can hold a header plus a useful payload
+            if b.size >= want + HDR + MIN_SPLIT {
+                local rest: *Block = ((b as usize) + HDR + want) as *Block
+                rest.size = b.size - want - HDR
+                rest.next = b.next
+                rest.used = 0
+                rest.pad = 0
+                b.size = want
+                b.next = rest
+            }
+            b.used = 1
+            usedBytes += b.size
+            return ((b as usize) + HDR) as *void
+        }
+        b = b.next
+    }
+    return nil
+}
+
+export(c) fn kfree(p: *void) {
+    if p == nil { return }
+    local b: *Block = ((p as usize) - HDR) as *Block
+    if b.used == 0 { return }   // double free: ignore (TODO: panic hook)
+    b.used = 0
+    usedBytes -= b.size
+    // coalesce forward, then backward by rescanning from the head
+    while b.next != nil && b.next.used == 0 {
+        b.size += HDR + b.next.size
+        b.next = b.next.next
+    }
+    local c: *Block = head
+    while c != nil && c.next != nil {
+        if c.used == 0 && c.next.used == 0 {
+            c.size += HDR + c.next.size
+            c.next = c.next.next
+        } else {
+            c = c.next
+        }
+    }
+}
+
+export(c) fn heap_used() -> usize {
+    return usedBytes
+}

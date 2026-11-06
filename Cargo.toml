@@ -1,0 +1,16 @@
+[package]
+name = "opl-kernel"
+version = "0.0.1"
+edition = "2024"
+
+[[bin]]
+name = "kernel"
+path = "src/kernel/main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+debug = 1
